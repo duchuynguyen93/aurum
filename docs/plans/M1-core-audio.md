@@ -98,3 +98,16 @@ UI/CLI ──Command──▶ DecoderThread ──f32 interleaved @out_rate─�
 - ReplayGain `ItemKey` trong lofty chưa kiểm chứng tên chính xác; nếu khác thì đọc `lofty/src/tag/item.rs`.
 - cpal trên Mac mặc định có thể cho f32 48k; trên Windows WASAPI shared có thể là 48k hoặc 44.1k, engine không được
   giả định.
+
+## Kết quả (2026-11-09)
+
+- Core: 10 test tích hợp + 7 test queue xanh. Quét thử `~/Music` trên Mac dev: 326 bài, 101 album, 210ms, 1 file WAV lạ bị lofty từ chối (scan vẫn tiếp tục). Scanner bỏ qua `remove_missing` khi một root không đọc được, để ổ ngắt kết nối không xoá thư viện.
+- Audio: 24 test xanh, 1 `#[ignore]`. Gapless FLAC→FLAC và MP3→MP3 đúng từng frame (176400/176400), đoạn ~0 dài nhất ở điểm nối 1 frame. Resample 48k→44.1k ra đúng 88200 frame. ReplayGain −6.02 dB cho RMS đúng 0.5000. Example `play` qua cpal thật (Mac: 48k, 2 kênh, f32) không underrun.
+- Lệch plan đã chấp nhận: gapless nằm ở `AudioDecoderOptions::gapless` (symphonia 0.6 bỏ `FormatOptions::enable_gapless`); resample dùng `rubato::Fft` FixedSync vì tỉ lệ cố định theo track; gain áp sau resample kèm `GainRamp` chống click; `TrackEnded/TrackStarted` bắn theo playhead (lúc nghe thấy) chứ không phải lúc decode xong.
+
+## Tồn đọng chuyển sang backlog
+
+- **M4A/AAC không cắt priming/padding**: `symphonia-format-isomp4 0.6.1` parse `elst` nhưng không dùng, không đọc iTunSMPB. File AAC thừa ~1912 frame (~43ms) ở rìa, join vẫn không có đoạn lặng. Test `flac_to_m4a_exact_length` để `#[ignore]`. Hướng: tự đọc `elst`/iTunSMPB trong `decoder.rs` và cắt phía mình (M4), hoặc chờ upstream.
+- Đổi volume có độ trễ ≤ 300ms (bằng ring) vì gain áp ở decoder. M2 nếu thấy UI lag thì chuyển volume vào callback qua atomic.
+- Downmix nhiều kênh chỉ copy kênh trùng, chưa đúng chuẩn 5.1 → stereo.
+- Chưa có test seek khi ring đã đầy (test hiện tại seek ngay sau load).

@@ -1,7 +1,8 @@
-//! Aurum core: data model and playback queue. No UI, no audio device.
+//! Aurum core: data model, playback queue and music library. No UI, no audio device.
 
+pub mod library;
 mod queue;
 mod track;
 
 pub use queue::{Queue, Repeat};
-pub use track::Track;
+pub use track::{ReplayGain, Track};

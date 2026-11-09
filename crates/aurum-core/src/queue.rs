@@ -128,9 +128,8 @@ mod tests {
             id,
             path: format!("/music/{id}.flac").into(),
             title: format!("Track {id}"),
-            artist: None,
-            album: None,
             duration_ms: 1000,
+            ..Track::default()
         }
     }
 

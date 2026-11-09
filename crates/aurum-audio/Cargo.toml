@@ -5,3 +5,17 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+# `ogg` and `pcm` are listed explicitly: Vorbis needs the Ogg demuxer and WAV/AIFF need the PCM
+# codec. They are also in symphonia's default features, but we do not want to depend on that.
+symphonia = { version = "0.6", features = ["mp3", "aac", "isomp4", "alac", "flac", "vorbis", "ogg", "pcm", "wav", "aiff"] }
+cpal = "0.18"
+rubato = "5"
+# Interleaved slice adapter, required to feed rubato 5 (same major as rubato's own dependency).
+audioadapter-buffers = "5"
+rtrb = "0.4"
+crossbeam-channel = "0.5"
+thiserror = "2"
+log = "0.4"
+
+[dev-dependencies]
+hound = "3.5"
