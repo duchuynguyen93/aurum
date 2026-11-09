@@ -1,0 +1,5 @@
+# gpui-pre-macos 0.3.11 uses Option::map_or_default, stable since Rust 1.96.
+# Pinned so a machine whose default `stable` is older still builds.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]

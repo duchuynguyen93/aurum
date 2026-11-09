@@ -13,7 +13,7 @@ happens on macOS.
 
 ## Build
 
-Requires a recent stable Rust (1.96 or newer; `gpui-pre-macos` 0.3.11 uses `Option::map_or_default`).
+The toolchain is pinned in `rust-toolchain.toml` (1.99.1); rustup installs it on first build. Anything older than 1.96 fails because `gpui-pre-macos` 0.3.11 uses `Option::map_or_default`.
 
 macOS:
 
