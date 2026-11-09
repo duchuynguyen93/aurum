@@ -77,3 +77,27 @@ seek và volume hoạt động, hết bài tự sang bài kế (gapless). Chụp
   Nếu không đạt thì dùng gradient từ màu trung bình của bìa.
 - `prompt_for_paths` trả `Receiver<Result<Option<Vec<PathBuf>>>>`, phải await trong spawn.
 - Trên Windows, callback cpal và GPUI chạy khác thread, mọi thứ đi qua channel như thiết kế M1 nên không có vấn đề, nhưng chưa ai chạy.
+
+## Ghi chú đợt A
+
+API thật đã dùng (gpui-pre 0.3.11, gpui-component 0.9, đọc từ registry):
+- Assets: `gpui_kit::application().with_assets(assets::Assets)`; `Assets` (`src/assets.rs`) là `AssetSource` tự viết, nhúng 17 SVG lucide trong `assets/icons/` bằng `include_bytes!`, path `icons/<tên>.svg`, không thấy thì rơi về `gpui_kit::assets::Assets`. Lucide đổi tên `trash-2` thành `trash`. `play.svg`/`pause.svg` đã đổi `fill="none"` thành `fill="currentColor"` để glyph đặc. Icon vẽ bằng `svg().path(..).text_color(..)` của GPUI, không dùng `gpui_component::Icon`.
+- Font: `cx.text_system().add_fonts(vec![Cow::Borrowed(bytes)])` trước khi mở cửa sổ. Fraunces, Inter, JetBrains Mono là variable font, macOS nhận được (chữ Fraunces serif khác hẳn Inter, mono đúng). Fraunces ra khá đậm ở cỡ nhỏ (trục opsz/wght mặc định), chưa chỉnh.
+- Slider: không dùng `gpui_component::slider`; tự vẽ (`ui/slider.rs`) bằng `canvas` đo bounds, `on_mouse_down` + `on_drag` + `on_drag_move::<D>` (mỗi slider một kiểu D riêng, vì drag-move định tuyến theo TypeId) + `on_mouse_up`/`on_mouse_up_out`. Handle hiện bằng `group_hover`.
+- Danh sách: `uniform_list` 44px, `cx.processor`; dòng phải `.w_full()` nếu không cột `relative()` co theo nội dung. Double-click: `ClickEvent::click_count() >= 2`.
+- Hộp thoại thư mục: `cx.prompt_for_paths(PathPromptOptions{directories:true, multiple:true,..})`, await trong `cx.spawn`. Chưa bấm thử hộp thoại hệ thống; settings.json được tạo tay với root `~/Music`.
+- Phím tắt: `actions!` của gpui_kit, `KeyBinding::new` với context "Aurum" (chọn cmd/ctrl bằng `cfg!`, vì `secondary-` cần `parse_with_os`). Click nền gọi `window.focus` để phím tắt không mất.
+
+Lệch plan:
+- `AppState` vừa là model vừa là root view (impl `Render` ở `ui/shell.rs`), không tách `Entity<AppState>` riêng. Không giữ `Library` trong state: mỗi lần reload mở connection mới ở background executor.
+- Không có `state/bridge.rs`: bridge nằm trong `AppState::tick` (timer 50ms). Không có `search` (đợt B). `View` chỉ có Albums/Artists/Tracks/Settings; Albums, Artists là placeholder. Mặc định mở Tracks.
+- Wordmark dùng Ivory50 (DESIGN.md chỉ cho Gold ở vài chỗ), không Gold như M0.
+- Thêm biến môi trường `AURUM_HOME` (ghi đè thư mục config + data, dùng cho test và chụp ảnh).
+- Thêm dep `rand 0.9` cho shuffle, `crossbeam-channel` cho `ScanEvent`.
+- Hàng đợi scan: yêu cầu quét lúc đang quét sẽ lặp lại một lần sau khi quét xong. Xoá root chạy quét để scanner dọn dòng của root đó.
+
+Hạn chế:
+- `AudioEngine` không có lệnh xoá hàng chờ: đổi repeat One -> Off ở bài cuối vẫn có thể lặp thêm một lần bài đã preload.
+- Khi cửa sổ bị che hoàn toàn, GPUI ngừng vẽ nên progress đứng hình (chạy lại khi hiện).
+- Đã thử bằng chuột thật: double-click phát, click/kéo seek trên progress. Chưa thử kéo volume, bài tự chuyển gapless, và chưa chụp được ảnh Settings đang quét (quét 326 file xong dưới 1 giây).
+- Tên cột artist/album trống với các bài không có tag (thư mục Unknown Artist).

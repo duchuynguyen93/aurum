@@ -19,3 +19,17 @@ pub const GOLD_700: u32 = 0xA8853F;
 
 pub const SUCCESS: u32 = 0x7FB58A;
 pub const DANGER: u32 = 0xC96B6B;
+
+pub const FONT_DISPLAY: &str = "Fraunces";
+pub const FONT_UI: &str = "Inter";
+pub const FONT_MONO: &str = "JetBrains Mono";
+
+/// Token colour as a GPUI colour.
+pub fn color(hex: u32) -> gpui_kit::Hsla {
+    gpui_kit::rgb(hex).into()
+}
+
+/// Divider: hairline `Ivory50` at 6% alpha.
+pub fn hairline() -> gpui_kit::Hsla {
+    color(IVORY_50).opacity(0.06)
+}

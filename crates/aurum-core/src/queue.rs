@@ -90,6 +90,57 @@ impl Queue {
         self.current()
     }
 
+    /// Replaces the whole queue with `tracks` in insertion order and makes `start` current.
+    /// An out-of-range `start` becomes the first track. With shuffle on, the rest is shuffled
+    /// and the start track is played first.
+    pub fn replace(&mut self, tracks: Vec<Track>, start: usize) {
+        self.order = (0..tracks.len()).collect();
+        self.tracks = tracks;
+        if self.tracks.is_empty() {
+            self.pos = None;
+            return;
+        }
+        let start = if start < self.tracks.len() { start } else { 0 };
+        self.pos = Some(start);
+        if self.shuffle {
+            self.set_shuffle(true, &mut rand::rng());
+        }
+    }
+
+    /// The track `next` would return, without changing the position.
+    pub fn peek_next(&self) -> Option<&Track> {
+        let pos = self.pos?;
+        let next = if self.repeat == Repeat::One {
+            pos
+        } else if pos + 1 < self.order.len() {
+            pos + 1
+        } else if self.repeat == Repeat::All {
+            0
+        } else {
+            return None;
+        };
+        Some(&self.tracks[self.order[next]])
+    }
+
+    /// Makes the track at play-order `index` current. `None` (and no change) if out of range.
+    pub fn jump(&mut self, index: usize) -> Option<&Track> {
+        if index >= self.order.len() {
+            return None;
+        }
+        self.pos = Some(index);
+        self.current()
+    }
+
+    /// Tracks in play order.
+    pub fn tracks(&self) -> impl Iterator<Item = &Track> {
+        self.order.iter().map(|&i| &self.tracks[i])
+    }
+
+    /// Play-order index of the current track.
+    pub fn position(&self) -> Option<usize> {
+        self.pos
+    }
+
     pub fn set_repeat(&mut self, repeat: Repeat) {
         self.repeat = repeat;
     }
@@ -231,5 +282,57 @@ mod tests {
         if c + 1 < 10 {
             assert_eq!(q.next().map(|t| t.id), Some(c + 1));
         }
+    }
+
+    #[test]
+    fn replace_sets_start_and_resets_order() {
+        let mut q = queue_of(2);
+        q.replace((10..15).map(track).collect(), 3);
+        assert_eq!(id(&q), Some(13));
+        assert_eq!(q.position(), Some(3));
+        assert_eq!(q.len(), 5);
+        q.replace(vec![track(1)], 9);
+        assert_eq!(id(&q), Some(1));
+        q.replace(Vec::new(), 0);
+        assert!(q.current().is_none());
+        assert_eq!(q.position(), None);
+    }
+
+    #[test]
+    fn replace_with_shuffle_plays_start_first() {
+        let mut q = Queue::new();
+        q.set_shuffle(true, &mut StdRng::seed_from_u64(3));
+        q.replace((0..20).map(track).collect(), 7);
+        assert_eq!(id(&q), Some(7));
+        assert_eq!(q.position(), Some(0));
+        let mut ids: Vec<u64> = q.tracks().map(|t| t.id).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, (0..20).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn peek_next_matches_next_without_moving() {
+        let mut q = queue_of(3);
+        for repeat in [Repeat::Off, Repeat::All, Repeat::One] {
+            q.set_repeat(repeat);
+            q.jump(0);
+            for _ in 0..5 {
+                let before = q.position();
+                let peeked = q.peek_next().map(|t| t.id);
+                assert_eq!(q.position(), before);
+                assert_eq!(q.next().map(|t| t.id), peeked, "{repeat:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn jump_and_tracks_follow_play_order() {
+        let mut q = queue_of(4);
+        assert_eq!(q.jump(2).map(|t| t.id), Some(2));
+        assert!(q.jump(4).is_none());
+        assert_eq!(q.position(), Some(2));
+        q.set_shuffle(true, &mut StdRng::seed_from_u64(5));
+        let order: Vec<u64> = q.tracks().map(|t| t.id).collect();
+        assert_eq!(order[q.position().unwrap()], id(&q).unwrap());
     }
 }

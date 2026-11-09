@@ -1,78 +1,83 @@
+mod assets;
+mod state;
 mod theme;
+mod ui;
+
+use std::borrow::Cow;
 
 use gpui_kit::*;
 
-struct AurumWindow;
+use state::app_state::AppState;
 
-impl AurumWindow {
-    /// GPUI has no letter-spacing, so wide tracking is emulated with one child per letter.
-    fn wordmark(text: &str) -> impl IntoElement {
-        div()
-            .flex()
-            .flex_row()
-            .gap(px(5.))
-            .text_size(px(13.))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(rgb(theme::GOLD_500))
-            .children(text.chars().map(|c| div().child(c.to_string())))
+const FONTS: [(&str, &[u8]); 3] = [
+    ("Fraunces", include_bytes!("../assets/fonts/Fraunces.ttf")),
+    ("Inter", include_bytes!("../assets/fonts/Inter.ttf")),
+    (
+        "JetBrains Mono",
+        include_bytes!("../assets/fonts/JetBrainsMono.ttf"),
+    ),
+];
+
+/// Registers the bundled fonts. A font that fails to load is logged and GPUI falls back to a
+/// system font for that family.
+fn load_fonts(cx: &mut App) {
+    for (name, bytes) in FONTS {
+        if let Err(e) = cx.text_system().add_fonts(vec![Cow::Borrowed(bytes)]) {
+            log::warn!("cannot load font {name}: {e}");
+        }
     }
 }
 
-impl Render for AurumWindow {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .size_full()
-            .flex()
-            .flex_row()
-            .bg(rgb(theme::OBSIDIAN_950))
-            .text_color(rgb(theme::IVORY_100))
-            .child(
-                div()
-                    .w(px(220.))
-                    .h_full()
-                    .flex_none()
-                    .bg(rgb(theme::OBSIDIAN_900))
-                    .p(px(24.))
-                    .child(Self::wordmark("AURUM")),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .gap(px(8.))
-                    .p(px(32.))
-                    .child(
-                        div()
-                            .text_size(px(22.))
-                            .text_color(rgb(theme::IVORY_50))
-                            .child("Albums"),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(theme::IVORY_300))
-                            .child("Library is empty"),
-                    ),
-            )
-    }
+fn bind_keys(cx: &mut App) {
+    let (next, prev, settings) = if cfg!(target_os = "macos") {
+        ("cmd-right", "cmd-left", "cmd-,")
+    } else {
+        ("ctrl-right", "ctrl-left", "ctrl-,")
+    };
+    cx.bind_keys([
+        KeyBinding::new("space", ui::TogglePlay, Some("Aurum")),
+        KeyBinding::new(next, ui::NextTrack, Some("Aurum")),
+        KeyBinding::new(prev, ui::PrevTrack, Some("Aurum")),
+        KeyBinding::new(settings, ui::OpenSettings, Some("Aurum")),
+    ]);
 }
 
 fn main() {
-    gpui_kit::application().run(|cx| {
-        gpui_kit::init(cx);
-        let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Aurum".into()),
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+
+    gpui_kit::application()
+        .with_assets(assets::Assets)
+        .run(|cx| {
+            gpui_kit::init(cx);
+            load_fonts(cx);
+            bind_keys(cx);
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
+            let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Aurum".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
-        gpui_kit::open_window(options, cx, |_, cx| cx.new(|_| AurumWindow))
-            .expect("failed to open window");
-        cx.activate(true);
-    });
+            };
+            let opened = gpui_kit::open_window(options, cx, |window, cx| {
+                let state = cx.new(AppState::new);
+                let focus = state.read(cx).focus.clone();
+                window.focus(&focus, cx);
+                state
+            });
+            if let Err(e) = opened {
+                log::error!("cannot open window: {e}");
+                cx.quit();
+                return;
+            }
+            cx.activate(true);
+        });
 }
