@@ -2,6 +2,7 @@
 //! so every handler can use `cx.listener` and reach the whole state.
 
 use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -9,9 +10,14 @@ use std::time::{Duration, Instant};
 use aurum_audio::{AudioEngine, CpalEngine, Event, NullEngine, Receiver, ReplayGain};
 use aurum_core::library::{Album, Library, LibraryError, ScanEvent, ScanSummary, Scanner};
 use aurum_core::{Queue, Repeat, Track};
-use gpui_kit::{Bounds, Context, FocusHandle, PathPromptOptions, Pixels, UniformListScrollHandle};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{
+    AppContext, Bounds, Context, Entity, FocusHandle, PathPromptOptions, Pixels, ScrollHandle,
+    UniformListScrollHandle, Window,
+};
+use rand::Rng;
 
-use super::cover_cache::{self, CoverCache};
+use super::cover_cache::{self, CoverCache, CoverKey};
 use super::paths;
 use super::settings::Settings;
 
@@ -30,6 +36,77 @@ pub enum View {
     Artists,
     Tracks,
     Settings,
+}
+
+/// A page pushed on top of the current list view; `back` pops it. Opening an album from an
+/// artist page keeps the artist page underneath.
+#[derive(Clone)]
+pub enum Detail {
+    Album(Rc<AlbumDetail>),
+    Artist(String),
+}
+
+/// An album page: its tracks (already ordered by disc and track number) and totals.
+pub struct AlbumDetail {
+    pub artist: Option<String>,
+    pub name: String,
+    pub year: Option<i32>,
+    pub tracks: Vec<Track>,
+    pub total: Duration,
+    pub scroll: ScrollHandle,
+}
+
+impl AlbumDetail {
+    pub fn cover_key(&self) -> CoverKey {
+        (self.artist.clone().unwrap_or_default(), self.name.clone())
+    }
+
+    pub fn cover_path(&self) -> Option<PathBuf> {
+        self.tracks.first().map(|t| t.path.clone())
+    }
+
+    /// Number of distinct discs; a missing disc number counts as disc 1.
+    pub fn disc_count(&self) -> usize {
+        self.tracks
+            .iter()
+            .map(|t| t.disc_no.unwrap_or(1))
+            .collect::<HashSet<_>>()
+            .len()
+    }
+}
+
+/// One row of the Artists list (artists are album artists).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtistRow {
+    pub name: String,
+    pub albums: usize,
+    pub tracks: usize,
+}
+
+/// Groups tracks by album artist, sorted by name ignoring case. Tracks without an album artist
+/// are left out (the scanner fills it from the artist tag when it is missing).
+pub fn artists_from(tracks: &[Track]) -> Vec<ArtistRow> {
+    let mut by_name: HashMap<&str, (HashSet<&str>, usize)> = HashMap::new();
+    for t in tracks {
+        let Some(name) = t.album_artist.as_deref() else {
+            continue;
+        };
+        let entry = by_name.entry(name).or_default();
+        if let Some(album) = t.album.as_deref() {
+            entry.0.insert(album);
+        }
+        entry.1 += 1;
+    }
+    let mut rows: Vec<ArtistRow> = by_name
+        .into_iter()
+        .map(|(name, (albums, tracks))| ArtistRow {
+            name: name.to_string(),
+            albums: albums.len(),
+            tracks,
+        })
+        .collect();
+    rows.sort_by_cached_key(|r| (r.name.to_lowercase(), r.name.clone()));
+    rows
 }
 
 #[derive(Debug, Clone, Default)]
@@ -54,13 +131,23 @@ pub struct AppState {
     pub settings: Settings,
     pub albums: Vec<Album>,
     pub tracks: Vec<Track>,
+    pub artists: Vec<ArtistRow>,
     pub library_loaded: bool,
     pub queue: Queue,
     pub playback: Playback,
     pub scan: Option<ScanProgress>,
     pub last_scan: Option<ScanSummary>,
     pub view: View,
+    pub detail: Vec<Detail>,
     pub covers: CoverCache,
+    /// Lower-cased trimmed query; empty means no filter.
+    pub search: String,
+    /// Tracks matching `search` (`Library::search`); `None` until the first answer arrives.
+    pub search_hits: Option<Vec<Track>>,
+    /// Indices into `albums` / `artists` that pass the current filter.
+    pub shown_albums: Vec<usize>,
+    pub shown_artists: Vec<usize>,
+    pub search_input: Entity<InputState>,
     /// Set when the audio device could not be opened or the engine reported an error.
     pub engine_error: Option<String>,
     /// Library database problems (open or query failures).
@@ -68,6 +155,11 @@ pub struct AppState {
 
     pub focus: FocusHandle,
     pub tracks_scroll: UniformListScrollHandle,
+    pub albums_scroll: UniformListScrollHandle,
+    pub artists_scroll: UniformListScrollHandle,
+    pub artist_albums_scroll: UniformListScrollHandle,
+    /// Set on mouse-down in a drag strip; the first mouse-move then starts the window move.
+    pub drag_armed: Rc<Cell<bool>>,
     /// Ratio shown on the progress bar while it is being dragged.
     pub scrub: Option<f32>,
     pub progress_bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -79,6 +171,7 @@ pub struct AppState {
     settings_path: PathBuf,
     db_path: PathBuf,
     settings_dirty_since: Option<Instant>,
+    search_gen: u64,
     rescan_pending: bool,
     scrub_started: Instant,
     last_scrub_seek: Instant,
@@ -92,7 +185,7 @@ fn gain_of(track: &Track) -> Option<ReplayGain> {
 }
 
 impl AppState {
-    pub fn new(cx: &mut Context<Self>) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let settings_path = paths::settings_path();
         let db_path = paths::db_path();
         if let Err(e) = std::fs::create_dir_all(paths::data_dir()) {
@@ -116,22 +209,46 @@ impl AppState {
         queue.set_repeat(settings.repeat.into());
         queue.set_shuffle(settings.shuffle, &mut rand::rng());
 
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
+        cx.subscribe_in(
+            &search_input,
+            window,
+            |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = input.read(cx).value().to_string();
+                    this.set_search(&text, cx);
+                }
+            },
+        )
+        .detach();
+
         let now = Instant::now();
         let mut this = Self {
             settings,
             albums: Vec::new(),
             tracks: Vec::new(),
+            artists: Vec::new(),
             library_loaded: false,
             queue,
             playback: Playback::default(),
             scan: None,
             last_scan: None,
-            view: View::Tracks,
+            view: View::Albums,
+            detail: Vec::new(),
             covers: CoverCache::default(),
+            search: String::new(),
+            search_hits: None,
+            shown_albums: Vec::new(),
+            shown_artists: Vec::new(),
+            search_input,
             engine_error,
             library_error: None,
             focus: cx.focus_handle(),
             tracks_scroll: UniformListScrollHandle::new(),
+            albums_scroll: UniformListScrollHandle::new(),
+            artists_scroll: UniformListScrollHandle::new(),
+            artist_albums_scroll: UniformListScrollHandle::new(),
+            drag_armed: Rc::default(),
             scrub: None,
             progress_bounds: Rc::default(),
             volume_bounds: Rc::default(),
@@ -141,6 +258,7 @@ impl AppState {
             settings_path,
             db_path,
             settings_dirty_since: None,
+            search_gen: 0,
             rescan_pending: false,
             scrub_started: now,
             last_scrub_seek: now,
@@ -182,9 +300,11 @@ impl AppState {
                             tracks.len(),
                             albums.len()
                         );
+                        s.artists = artists_from(&tracks);
                         s.albums = albums;
                         s.tracks = tracks;
                         s.library_error = None;
+                        s.refresh_filters();
                     }
                     Err(e) => {
                         log::error!("cannot read library: {e}");
@@ -266,11 +386,173 @@ impl AppState {
         .detach();
     }
 
+    /// Switches the top-level view and drops any detail pages on top of it.
     pub fn set_view(&mut self, view: View, cx: &mut Context<Self>) {
-        if self.view != view {
+        if self.view != view || !self.detail.is_empty() {
             self.view = view;
+            self.detail.clear();
             cx.notify();
         }
+    }
+
+    // ---- navigation ----------------------------------------------------------------------
+
+    /// Opens the page of `self.albums[index]`. Its tracks come from the in-memory list, which
+    /// is already ordered by album, disc and track number.
+    pub fn open_album(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(album) = self.albums.get(index) else {
+            return;
+        };
+        let tracks: Vec<Track> = self
+            .tracks
+            .iter()
+            .filter(|t| {
+                t.album.as_deref() == Some(album.name.as_str()) && t.album_artist == album.artist
+            })
+            .cloned()
+            .collect();
+        let total = Duration::from_millis(tracks.iter().map(|t| t.duration_ms).sum());
+        let detail = AlbumDetail {
+            artist: album.artist.clone(),
+            name: album.name.clone(),
+            year: album.year,
+            tracks,
+            total,
+            scroll: ScrollHandle::new(),
+        };
+        if let Some(path) = detail.cover_path() {
+            self.ensure_cover_for(detail.cover_key(), path, cx);
+        }
+        self.detail.push(Detail::Album(Rc::new(detail)));
+        cx.notify();
+    }
+
+    pub fn open_artist(&mut self, name: String, cx: &mut Context<Self>) {
+        self.artist_albums_scroll = UniformListScrollHandle::new();
+        self.detail.push(Detail::Artist(name));
+        cx.notify();
+    }
+
+    pub fn back(&mut self, cx: &mut Context<Self>) {
+        if self.detail.pop().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Albums shown in the grid of the current page: every filtered album, or the filtered
+    /// albums of the artist whose page is open.
+    pub fn grid_albums(&self) -> Vec<usize> {
+        match self.detail.last() {
+            Some(Detail::Artist(name)) => self
+                .shown_albums
+                .iter()
+                .copied()
+                .filter(|&i| self.albums[i].artist.as_deref() == Some(name.as_str()))
+                .collect(),
+            _ => self.shown_albums.clone(),
+        }
+    }
+
+    // ---- search --------------------------------------------------------------------------
+
+    /// Tracks of the Tracks view: all of them, or the search hits.
+    pub fn visible_tracks(&self) -> &[Track] {
+        match (&self.search_hits, self.search.is_empty()) {
+            (Some(hits), false) => hits,
+            _ => &self.tracks,
+        }
+    }
+
+    /// Applies a new query typed in the search box. Track matches come from `Library::search`
+    /// on a background thread; answers to an older query are dropped.
+    pub fn set_search(&mut self, text: &str, cx: &mut Context<Self>) {
+        let query = text.trim().to_lowercase();
+        if query == self.search {
+            return;
+        }
+        self.search = query.clone();
+        self.search_gen += 1;
+        if query.is_empty() {
+            self.search_hits = None;
+            self.refresh_filters();
+            cx.notify();
+            return;
+        }
+        // Names can be filtered at once; track matches follow when the query answers.
+        self.refresh_filters();
+        cx.notify();
+        let (gen_id, db) = (self.search_gen, self.db_path.clone());
+        cx.spawn(async move |this, cx| {
+            let hits = cx
+                .background_executor()
+                .spawn(async move { Library::open(&db)?.search(&query) })
+                .await;
+            this.update(cx, |s, cx| {
+                if s.search_gen != gen_id {
+                    return;
+                }
+                s.search_hits = Some(hits.unwrap_or_else(|e| {
+                    log::error!("search failed: {e}");
+                    Vec::new()
+                }));
+                s.refresh_filters();
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Esc: empties the box, drops the filter and hands the focus back to the shell.
+    pub fn clear_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |input, cx| input.set_value("", window, cx));
+        self.set_search("", cx);
+        window.focus(&self.focus, cx);
+    }
+
+    pub fn focus_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.search_input
+            .update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// Recomputes `shown_albums` and `shown_artists` from the query: an album passes when its
+    /// name or artist contains it, or when one of its tracks is a search hit.
+    fn refresh_filters(&mut self) {
+        if self.search.is_empty() {
+            self.shown_albums = (0..self.albums.len()).collect();
+            self.shown_artists = (0..self.artists.len()).collect();
+            return;
+        }
+        let q = &self.search;
+        let hit_albums: HashSet<(Option<&str>, &str)> = self
+            .search_hits
+            .iter()
+            .flatten()
+            .filter_map(|t| Some((t.album_artist.as_deref(), t.album.as_deref()?)))
+            .collect();
+        let shown_albums = self
+            .albums
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| {
+                a.name.to_lowercase().contains(q.as_str())
+                    || a.artist
+                        .as_deref()
+                        .is_some_and(|x| x.to_lowercase().contains(q.as_str()))
+                    || hit_albums.contains(&(a.artist.as_deref(), a.name.as_str()))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let shown_artists = self
+            .artists
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.name.to_lowercase().contains(q.as_str()))
+            .map(|(i, _)| i)
+            .collect();
+        self.shown_albums = shown_albums;
+        self.shown_artists = shown_artists;
     }
 
     // ---- settings ------------------------------------------------------------------------
@@ -297,10 +579,24 @@ impl AppState {
         self.start_current(cx);
     }
 
-    /// Plays row `index` of the library's Tracks list.
+    /// Plays row `index` of the Tracks list (as filtered by the search).
     pub fn play_library_track(&mut self, index: usize, cx: &mut Context<Self>) {
-        let tracks = self.tracks.clone();
+        let tracks = self.visible_tracks().to_vec();
         self.play_tracks(tracks, index, cx);
+    }
+
+    /// Turns shuffle on and plays `tracks` from a random one.
+    pub fn play_shuffled(&mut self, tracks: Vec<Track>, cx: &mut Context<Self>) {
+        if tracks.is_empty() {
+            return;
+        }
+        if !self.queue.is_shuffled() {
+            self.queue.set_shuffle(true, &mut rand::rng());
+            self.settings.shuffle = true;
+            self.save_settings(cx);
+        }
+        let start = rand::rng().random_range(0..tracks.len());
+        self.play_tracks(tracks, start, cx);
     }
 
     /// Loads and plays the queue's current track.
@@ -440,18 +736,21 @@ impl AppState {
     // ---- covers --------------------------------------------------------------------------
 
     fn ensure_cover(&mut self, track: &Track, cx: &mut Context<Self>) {
-        let key = cover_cache::key_of(track);
+        self.ensure_cover_for(cover_cache::key_of(track), track.path.clone(), cx);
+    }
+
+    /// Starts loading the cover under `key` from the picture embedded in `path`, once.
+    pub fn ensure_cover_for(&mut self, key: CoverKey, path: PathBuf, cx: &mut Context<Self>) {
         if !self.covers.begin_load(&key) {
             return;
         }
-        let path = track.path.clone();
         cx.spawn(async move |this, cx| {
-            let image = cx
+            let art = cx
                 .background_executor()
-                .spawn(async move { cover_cache::load_image(&path) })
+                .spawn(async move { cover_cache::load_art(&path) })
                 .await;
             this.update(cx, |s, cx| {
-                s.covers.finish_load(key, image);
+                s.covers.finish_load(key, art);
                 cx.notify();
             })
             .ok();
@@ -585,5 +884,46 @@ impl AppState {
                 log::warn!("scan error at {}: {msg}", path.display());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(album_artist: Option<&str>, album: Option<&str>) -> Track {
+        Track {
+            album_artist: album_artist.map(String::from),
+            album: album.map(String::from),
+            ..Track::default()
+        }
+    }
+
+    #[test]
+    fn artists_group_by_album_artist_and_sort_ignoring_case() {
+        let tracks = vec![
+            track(Some("beta"), Some("B1")),
+            track(Some("Alpha"), Some("A1")),
+            track(Some("Alpha"), Some("A1")),
+            track(Some("Alpha"), Some("A2")),
+            track(Some("Alpha"), None),
+            track(None, Some("Orphan")),
+        ];
+        let rows = artists_from(&tracks);
+        assert_eq!(
+            rows,
+            vec![
+                ArtistRow {
+                    name: "Alpha".into(),
+                    albums: 2,
+                    tracks: 4
+                },
+                ArtistRow {
+                    name: "beta".into(),
+                    albums: 1,
+                    tracks: 1
+                },
+            ]
+        );
     }
 }

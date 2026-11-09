@@ -101,3 +101,28 @@ Hạn chế:
 - Khi cửa sổ bị che hoàn toàn, GPUI ngừng vẽ nên progress đứng hình (chạy lại khi hiện).
 - Đã thử bằng chuột thật: double-click phát, click/kéo seek trên progress. Chưa thử kéo volume, bài tự chuyển gapless, và chưa chụp được ảnh Settings đang quét (quét 326 file xong dưới 1 giây).
 - Tên cột artist/album trống với các bài không có tag (thư mục Unknown Artist).
+
+## Ghi chú đợt B
+
+API thật đã dùng (gpui-pre 0.3.11, gpui-component 0.9):
+- **Theme**: `theme::apply(cx)` gọi `Theme::change(ThemeMode::Dark)` rồi `Theme::update` để đặt background, foreground, muted_foreground, border, input, ring (Gold500), caret, selection, popover, skeleton, font_family, radius từ token. Widget của gpui-component (Input, Tooltip, Skeleton) đọc màu từ đây.
+- **Ảnh bìa**: `cover_cache` giờ giữ `CoverArt { thumb, blur }`, cả hai là `Arc<RenderImage>` dựng ở background executor bằng crate `image` (feature jpeg + png): thumb tối đa 400px, blur = resize 64x64 rồi `imageops::blur(sigma 4)`. Pixel đổi sang BGRA trước khi vào `RenderImage::new`. Không đưa ảnh full-size cho GPUI (101 album x ảnh vài megapixel sẽ ăn RAM/texture). Bìa WebP chưa hỗ trợ (hiện placeholder đĩa), bìa nằm ngoài tag (folder.jpg) chưa đọc: M1 `cover::load` chỉ đọc ảnh nhúng. `Lookup::{Ready, Missing, Loading}`; Loading vẽ `gpui_component::skeleton::Skeleton` (nhấp nháy opacity), Missing vẽ icon disc trên Obsidian800.
+- **Blur nền**: ảnh blur 64px được kéo giãn bằng `img(..).absolute().size_full().object_fit(Cover)`; GPUI lấy mẫu song tuyến nên phóng to từ ảnh đã blur thì mịn, không lộ ô vuông (đã nhìn ảnh chụp). Bar: lớp phủ Obsidian900 85%. AlbumDetail header: lớp phủ Obsidian950 70% + dải gradient 96px dưới đáy hoà vào nền trang (lệch nhẹ DESIGN "gradient chỉ ở Now Playing", ghi nhận). Không cần fallback màu trung bình.
+- **Lưới Albums**: số cột tính từ `window.viewport_size().width - 220 - 64` (không cần canvas đo, không giật một khung). `uniform_list` theo hàng, chiều cao hàng = card + 12 + 54 + 24 cố định. Cover được nạp trong `cx.processor` (chỉ hàng đang hiện). Dùng chung cho ArtistDetail.
+- **Điều hướng**: `View` vẫn là Albums/Artists/Tracks/Settings (Copy); trang chi tiết là `AppState.detail: Vec<Detail>` (Album/Artist) chồng lên view. Mở album từ trang nghệ sĩ rồi Back quay về trang nghệ sĩ; bấm mục sidebar thì xoá hết chồng. Mặc định mở Albums.
+- **Artists**: tính ở app từ `all_tracks()` (nhóm theo album_artist), không thêm query vào `aurum-core` (không đụng `db.rs`/`mod.rs`, nên không có test core mới). Test `artists_from` nằm ở `state/app_state.rs`. Track không có album_artist không vào danh sách nghệ sĩ.
+- **Tìm kiếm**: `gpui_component::input::{Input, InputState, InputEvent}`; `InputState::new(window, cx)` nên `AppState::new(window, cx)`. `Library::search` chạy ở background, có bộ đếm thế hệ để bỏ kết quả cũ. Tracks: lọc theo hit; Albums: tên/nghệ sĩ khớp (Rust, không phân biệt hoa thường) hoặc có bài nằm trong hit; Artists: lọc theo tên. Cmd/Ctrl+F → `FocusSearch`; Esc: Input tự gọi `cx.propagate()` nên binding `escape` trên context "Aurum" (`ClearSearch`) chạy cả khi đang gõ; `set_value("")` không phát Change nên tự reset trạng thái. Space/Next/Prev: binding nằm trên "Aurum" (chứa cả Input; `!Input` không giúp vì GPUI so khớp ở từng độ sâu) nên handler kiểm `self.focus.is_focused(window)`, không thì `cx.propagate()`; đã gõ được "andrea bo" có dấu cách mà nhạc không bị toggle. Ô tìm kiếm chỉ hiện ở Albums/Artists/Tracks/ArtistDetail, không ở AlbumDetail.
+- **Title bar**: `WindowOptions { titlebar: TitlebarOptions { appears_transparent: true, traffic_light_position: (16,12) }, ..TitleBar::window_options() }` (có `app_owns_titlebar_drag: true`, cả content view là vùng app tự kéo). Sidebar chạy tận mép trên; dải kéo 34px của sidebar là `drag_strip` tự viết (mouse-down bật cờ, mouse-move đầu tiên gọi `window.start_window_move()`, double-click `titlebar_double_click`/`zoom_window`, `window_control_area(Drag)`); cột chính dùng `gpui_component::TitleBar` (cho nút min/max/close của Windows) phủ tuyệt đối trên cùng, nền Obsidian950 (trong suốt ở trang album để thấy blur). Đã thử kéo bằng chuột thật trên cả hai dải: cửa sổ dịch đúng. Windows chưa chạy thử, chỉ dựa vào mã của `TitleBar`.
+- **Polish**: tooltip bằng `div().tooltip(|w, cx| Tooltip::new(..).build(w, cx))` của GPUI (managed tooltip của gpui-component là `pub(crate)`); banner Danger trên bar khi `engine_error` (nút x xoá), đã chụp bằng cách ép lỗi tạm thời qua biến môi trường (đã gỡ).
+
+Lệch plan:
+- Không có `View::AlbumDetail/ArtistDetail` mà dùng chồng `detail`; không có `artists()`/`albums_of_artist()` ở core; tìm kiếm Artists lọc theo tên thôi.
+- Thêm dep `image 0.25` (jpeg, png; đã có sẵn trong Cargo.lock qua gpui nên không build thêm).
+- Trong module test không dùng `use super::*` nếu file có `use gpui_kit::*`: glob kéo theo macro `test` của gpui, đè `#[test]` và gây "recursion limit reached".
+
+Hạn chế:
+- Thư viện thử nghiệm có nhiều bản trùng (mỗi bài hai file) nên album hiển thị hai dòng cùng tên.
+- Texture của ảnh bìa không được giải phóng khỏi atlas GPUI khi bị đẩy khỏi cache LRU (RenderImage không tự `drop_image`); 101 album ~ 65MB, chấp nhận được.
+- Khi cửa sổ bị che hoàn toàn GPUI ngừng vẽ nên ảnh chụp lúc đó là ảnh cũ; khi chụp phải đưa cửa sổ lên trên cùng.
+- Albums không có bìa nhúng hiện icon đĩa (khoảng 1/4 album thử nghiệm).
+- Fraunces vẫn khá đậm ở 15px (trục opsz/wght mặc định).

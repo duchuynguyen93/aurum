@@ -103,7 +103,7 @@ impl AppState {
             .flex()
             .flex_col()
             .px(px(32.))
-            .pt(px(32.))
+            .pt(px(48.))
             .gap(px(20.))
             .child(view_title("Settings"))
             .child(section_label("Music folders"))

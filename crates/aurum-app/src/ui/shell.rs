@@ -1,34 +1,115 @@
 //! Window shell: sidebar, main area and the Now Playing bar. `AppState` is the root view.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
+use gpui_kit::component::{InteractiveElementExt as _, TitleBar};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
-use super::widgets::{icon, spaced, view_title};
-use crate::state::app_state::{AppState, View};
+use super::albums::SIDEBAR_WIDTH;
+use super::widgets::{icon, spaced, tip};
+use crate::state::app_state::{AppState, Detail, View};
 use crate::theme;
 
-actions!(aurum, [TogglePlay, NextTrack, PrevTrack, OpenSettings]);
+actions!(
+    aurum,
+    [
+        TogglePlay,
+        NextTrack,
+        PrevTrack,
+        OpenSettings,
+        FocusSearch,
+        ClearSearch
+    ]
+);
 
-const SIDEBAR_WIDTH: f32 = 220.;
+const TITLE_BAR_HEIGHT: f32 = 34.;
+
+/// Invisible strip that moves the window. The window owns no system title bar (see
+/// `main.rs`), so it does the same as gpui-component's `TitleBar`: a press arms the move, the
+/// first mouse move starts it, a double click zooms.
+fn drag_strip(armed: Rc<Cell<bool>>) -> Stateful<Div> {
+    let (down, moved, up) = (armed.clone(), armed.clone(), armed);
+    div()
+        .id("drag-strip")
+        .window_control_area(WindowControlArea::Drag)
+        .on_double_click(|_, window, _| {
+            if cfg!(target_os = "macos") {
+                window.titlebar_double_click();
+            } else {
+                window.zoom_window();
+            }
+        })
+        .on_mouse_down(MouseButton::Left, move |_, _, _| down.set(true))
+        .on_mouse_up(MouseButton::Left, move |_, _, _| up.set(false))
+        .on_mouse_move(move |_, window, _| {
+            if moved.replace(false) {
+                window.start_window_move();
+            }
+        })
+}
 
 impl Render for AppState {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_roots = !self.settings.roots.is_empty();
-        let main = match self.view {
-            View::Settings => self.render_settings(cx).into_any_element(),
-            _ if !has_roots => self.render_empty(cx).into_any_element(),
-            View::Tracks => self.render_tracks(cx).into_any_element(),
-            View::Albums => self.render_placeholder("Albums").into_any_element(),
-            View::Artists => self.render_placeholder("Artists").into_any_element(),
+        let top = self.detail.last().cloned();
+        let main = if self.view == View::Settings {
+            self.render_settings(cx).into_any_element()
+        } else if !has_roots {
+            self.render_empty(cx).into_any_element()
+        } else {
+            match (top, self.view) {
+                (Some(Detail::Album(d)), _) => self.render_album_detail(d, cx).into_any_element(),
+                (Some(Detail::Artist(name)), _) => self
+                    .render_artist_detail(&name, window, cx)
+                    .into_any_element(),
+                (None, View::Albums) => self.render_albums(window, cx).into_any_element(),
+                (None, View::Artists) => self.render_artists(cx).into_any_element(),
+                (None, View::Tracks) | (None, View::Settings) => {
+                    self.render_tracks(cx).into_any_element()
+                }
+            }
+        };
+        // The album page paints its own blurred backdrop up to the top edge.
+        let bar_bg = if self.view != View::Settings
+            && has_roots
+            && matches!(self.detail.last(), Some(Detail::Album(_)))
+        {
+            transparent_black()
+        } else {
+            theme::color(theme::OBSIDIAN_950)
         };
 
         div()
             .key_context("Aurum")
             .track_focus(&self.focus)
-            .on_action(cx.listener(|s, _: &TogglePlay, _, cx| s.toggle_play(cx)))
-            .on_action(cx.listener(|s, _: &NextTrack, _, cx| s.next(cx)))
-            .on_action(cx.listener(|s, _: &PrevTrack, _, cx| s.prev(cx)))
+            // Shortcuts are bound on the "Aurum" context, which also contains the search box.
+            // While the box has focus they must not act, so the keystroke reaches the text.
+            .on_action(cx.listener(|s, _: &TogglePlay, window, cx| {
+                if s.focus.is_focused(window) {
+                    s.toggle_play(cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|s, _: &NextTrack, window, cx| {
+                if s.focus.is_focused(window) {
+                    s.next(cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|s, _: &PrevTrack, window, cx| {
+                if s.focus.is_focused(window) {
+                    s.prev(cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
             .on_action(cx.listener(|s, _: &OpenSettings, _, cx| s.set_view(View::Settings, cx)))
+            .on_action(cx.listener(|s, _: &FocusSearch, window, cx| s.focus_search(window, cx)))
+            .on_action(cx.listener(|s, _: &ClearSearch, window, cx| s.clear_search(window, cx)))
             // Clicks on plain divs do not move focus, which would silence the shortcuts.
             .on_mouse_down(
                 MouseButton::Left,
@@ -50,14 +131,22 @@ impl Render for AppState {
                     .child(self.render_sidebar(cx))
                     .child(
                         div()
+                            .relative()
                             .flex_1()
                             .min_w_0()
                             .h_full()
-                            .flex()
-                            .flex_col()
-                            .child(main),
+                            .child(div().size_full().flex().flex_col().child(main))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .top_0()
+                                    .left_0()
+                                    .w_full()
+                                    .child(TitleBar::new().bg(bar_bg).border_color(bar_bg)),
+                            ),
                     ),
             )
+            .children(self.render_engine_banner(cx))
             .child(self.render_now_playing(cx))
     }
 }
@@ -103,6 +192,7 @@ impl AppState {
         };
 
         div()
+            .relative()
             .w(px(SIDEBAR_WIDTH))
             .h_full()
             .flex_none()
@@ -110,7 +200,17 @@ impl AppState {
             .flex_col()
             .bg(rgb(theme::OBSIDIAN_900))
             .px(px(16.))
-            .py(px(24.))
+            .pt(px(TITLE_BAR_HEIGHT + 20.))
+            .pb(px(24.))
+            // The traffic lights sit on the sidebar; the strip above lets it drag the window.
+            .child(
+                drag_strip(self.drag_armed.clone())
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .w_full()
+                    .h(px(TITLE_BAR_HEIGHT)),
+            )
             .child(
                 div()
                     .px(px(12.))
@@ -138,21 +238,6 @@ impl AppState {
                 "settings",
                 View::Settings,
             )))
-    }
-
-    fn render_placeholder(&self, title: &str) -> impl IntoElement {
-        div()
-            .size_full()
-            .p(px(32.))
-            .flex()
-            .flex_col()
-            .gap(px(8.))
-            .child(view_title(title))
-            .child(
-                div()
-                    .text_color(rgb(theme::IVORY_500))
-                    .child("This view arrives in the next step of milestone 2."),
-            )
     }
 
     /// Shown instead of the library views while no music folder is configured.
@@ -198,5 +283,48 @@ impl AppState {
                     .on_click(cx.listener(|s, _, _, cx| s.prompt_add_folder(cx)))
                     .child("Add a music folder"),
             )
+    }
+}
+
+impl AppState {
+    /// Danger strip above the bar while the audio engine reports a problem.
+    fn render_engine_banner(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let message = self.engine_error.clone()?;
+        Some(
+            div()
+                .w_full()
+                .h(px(40.))
+                .flex_none()
+                .px(px(24.))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.))
+                .bg(theme::color(theme::DANGER).opacity(0.14))
+                .border_t_1()
+                .border_color(theme::color(theme::DANGER).opacity(0.4))
+                .text_size(px(13.))
+                .text_color(rgb(theme::DANGER))
+                .child(icon("triangle-alert", 16., theme::DANGER))
+                .child(div().flex_1().min_w_0().truncate().child(message))
+                .child(
+                    div()
+                        .id("banner-close")
+                        .size(px(28.))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::color(theme::DANGER).opacity(0.2)))
+                        .tooltip(tip("Dismiss"))
+                        .on_click(cx.listener(|s, _, _, cx| {
+                            s.engine_error = None;
+                            cx.notify();
+                        }))
+                        .child(icon("x", 16., theme::DANGER)),
+                ),
+        )
     }
 }

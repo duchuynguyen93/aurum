@@ -31,6 +31,10 @@ icons!(
     "folder-plus",
     "trash",
     "refresh-cw",
+    "arrow-left",
+    "search",
+    "x",
+    "triangle-alert",
 );
 
 pub struct Assets;

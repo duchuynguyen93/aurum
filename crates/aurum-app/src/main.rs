@@ -29,16 +29,20 @@ fn load_fonts(cx: &mut App) {
 }
 
 fn bind_keys(cx: &mut App) {
-    let (next, prev, settings) = if cfg!(target_os = "macos") {
-        ("cmd-right", "cmd-left", "cmd-,")
+    let (next, prev, settings, find) = if cfg!(target_os = "macos") {
+        ("cmd-right", "cmd-left", "cmd-,", "cmd-f")
     } else {
-        ("ctrl-right", "ctrl-left", "ctrl-,")
+        ("ctrl-right", "ctrl-left", "ctrl-,", "ctrl-f")
     };
     cx.bind_keys([
         KeyBinding::new("space", ui::TogglePlay, Some("Aurum")),
         KeyBinding::new(next, ui::NextTrack, Some("Aurum")),
         KeyBinding::new(prev, ui::PrevTrack, Some("Aurum")),
         KeyBinding::new(settings, ui::OpenSettings, Some("Aurum")),
+        KeyBinding::new(find, ui::FocusSearch, Some("Aurum")),
+        // The search input's own Escape binding ends with `cx.propagate()`, so this action
+        // also runs while the input has focus.
+        KeyBinding::new("escape", ui::ClearSearch, Some("Aurum")),
     ]);
 }
 
@@ -49,6 +53,7 @@ fn main() {
         .with_assets(assets::Assets)
         .run(|cx| {
             gpui_kit::init(cx);
+            theme::apply(cx);
             load_fonts(cx);
             bind_keys(cx);
             cx.on_window_closed(|cx, _| {
@@ -59,16 +64,21 @@ fn main() {
             .detach();
 
             let bounds = Bounds::centered(None, size(px(1200.), px(760.)), cx);
+            // Transparent title bar: macOS keeps the traffic lights over our own background,
+            // Windows gets no white system bar. `window_options` makes the app own dragging
+            // (see `ui::shell::drag_strip`).
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Aurum".into()),
-                    ..Default::default()
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(16.), px(12.))),
                 }),
-                ..Default::default()
+                window_min_size: Some(size(px(900.), px(560.))),
+                ..component::TitleBar::window_options()
             };
             let opened = gpui_kit::open_window(options, cx, |window, cx| {
-                let state = cx.new(AppState::new);
+                let state = cx.new(|cx| AppState::new(window, cx));
                 let focus = state.read(cx).focus.clone();
                 window.focus(&focus, cx);
                 state

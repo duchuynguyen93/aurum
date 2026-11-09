@@ -12,7 +12,7 @@ const ROW_HEIGHT: f32 = 44.;
 
 impl AppState {
     pub(super) fn render_tracks(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.tracks.len();
+        let count = self.visible_tracks().len();
         let subtitle = match (&self.scan, &self.library_error) {
             (_, Some(e)) => e.clone(),
             (Some(_), None) => format!("{count} songs, scanning"),
@@ -20,10 +20,12 @@ impl AppState {
         };
 
         let body = if count == 0 {
-            let text = if self.scan.is_some() || !self.library_loaded {
-                "Reading your music..."
+            let text = if !self.search.is_empty() {
+                format!("No songs match \u{201c}{}\u{201d}.", self.search)
+            } else if self.scan.is_some() || !self.library_loaded {
+                "Reading your music...".to_string()
             } else {
-                "No audio files were found in your folders."
+                "No audio files were found in your folders.".to_string()
             };
             div()
                 .flex_1()
@@ -52,31 +54,33 @@ impl AppState {
             .flex()
             .flex_col()
             .px(px(32.))
-            .pt(px(32.))
+            .pt(px(48.))
             .gap(px(16.))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_baseline()
-                    .gap(px(12.))
-                    .child(view_title("Tracks"))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(if self.library_error.is_some() {
-                                theme::DANGER
-                            } else {
-                                theme::IVORY_500
-                            }))
-                            .child(subtitle),
-                    ),
+                self.view_header(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_baseline()
+                        .gap(px(12.))
+                        .child(view_title("Tracks"))
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(rgb(if self.library_error.is_some() {
+                                    theme::DANGER
+                                } else {
+                                    theme::IVORY_500
+                                }))
+                                .child(subtitle),
+                        ),
+                ),
             )
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
     }
 
     fn track_row(&self, ix: usize, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = &self.tracks[ix];
+        let t = &self.visible_tracks()[ix];
         let playing = self
             .playback
             .current

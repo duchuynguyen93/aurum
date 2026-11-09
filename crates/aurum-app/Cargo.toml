@@ -19,3 +19,4 @@ crossbeam-channel = "0.5.17"
 dirs = "6"
 serde = { version = "1.0.229", features = ["derive"] }
 rand = "0.9"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

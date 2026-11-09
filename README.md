@@ -4,7 +4,7 @@ A local music player for desktop, written in Rust with [GPUI](https://www.gpui.r
 [gpui-kit](https://github.com/longbridge/gpui-kit)). Windows is the main target; development
 happens on macOS.
 
-**Status: M0, window only.** No audio, no library yet. Windows is only verified through CI so far.
+**Status: M2 done.** Scans local folders into SQLite, browses albums / artists / tracks with cover art and search, plays FLAC, MP3, AAC/ALAC, Vorbis, WAV and AIFF gaplessly with ReplayGain. Verified by hand on macOS; Windows builds and passes tests in CI but has not been run by a person yet.
 
 ## Stack
 

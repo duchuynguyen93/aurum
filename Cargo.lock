@@ -578,6 +578,7 @@ dependencies = [
  "dirs 6.0.0",
  "env_logger",
  "gpui-kit",
+ "image",
  "log",
  "rand 0.9.5",
  "serde",

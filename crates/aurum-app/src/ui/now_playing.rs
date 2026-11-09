@@ -8,7 +8,7 @@ use gpui_kit::*;
 
 use super::format::clock;
 use super::slider::Slider;
-use super::widgets::icon;
+use super::widgets::{icon, tip};
 use crate::state::app_state::AppState;
 use crate::state::cover_cache;
 use crate::theme;
@@ -24,11 +24,19 @@ struct VolumeDrag;
 
 impl AppState {
     pub(super) fn render_now_playing(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
+        let blur = self
+            .playback
+            .current
+            .as_ref()
+            .and_then(|t| self.covers.get(&cover_cache::key_of(t)))
+            .map(|art| art.blur);
         let left = self.now_playing_info();
         let center = self.now_playing_center(cx);
         let right = self.now_playing_volume(cx);
 
         div()
+            .relative()
+            .overflow_hidden()
             .h(px(BAR_HEIGHT))
             .w_full()
             .flex_none()
@@ -40,6 +48,23 @@ impl AppState {
             .bg(rgb(theme::OBSIDIAN_900))
             .border_t_1()
             .border_color(theme::hairline())
+            // Pre-blurred cover stretched over the bar, then 85% Obsidian900 on top.
+            .children(blur.map(|image| {
+                img(image)
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+            }))
+            .child(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme::color(theme::OBSIDIAN_900).opacity(0.85)),
+            )
             .child(left)
             .child(center)
             .child(right)
@@ -61,7 +86,7 @@ impl AppState {
             .items_center()
             .justify_center()
             .child(match cover {
-                Some(image) => img(image)
+                Some(art) => img(art.thumb)
                     .size_full()
                     .object_fit(ObjectFit::Cover)
                     .into_any_element(),
@@ -80,16 +105,10 @@ impl AppState {
             None => ("Nothing playing".to_string(), String::new()),
         };
 
-        let sub = match &self.engine_error {
-            Some(e) => div()
-                .text_size(px(11.))
-                .text_color(rgb(theme::DANGER))
-                .child(e.clone()),
-            None => div()
-                .text_size(px(13.))
-                .text_color(rgb(theme::IVORY_300))
-                .child(subtitle),
-        };
+        let sub = div()
+            .text_size(px(13.))
+            .text_color(rgb(theme::IVORY_300))
+            .child(subtitle);
 
         div()
             .w(px(300.))
@@ -124,9 +143,10 @@ impl AppState {
     }
 
     fn now_playing_center(&self, cx: &mut Context<Self>) -> Div {
-        let button = |id: &'static str, glyph: &'static str, color: u32| {
+        let button = |id: &'static str, glyph: &'static str, color: u32, label: &'static str| {
             div()
                 .id(id)
+                .tooltip(tip(label))
                 .size(px(36.))
                 .flex()
                 .items_center()
@@ -156,11 +176,16 @@ impl AppState {
                     } else {
                         theme::IVORY_500
                     },
+                    if shuffle_on {
+                        "Shuffle: on"
+                    } else {
+                        "Shuffle: off"
+                    },
                 )
                 .on_click(cx.listener(|s, _, _, cx| s.toggle_shuffle(cx))),
             )
             .child(
-                button("ctl-prev", "skip-back", theme::IVORY_100)
+                button("ctl-prev", "skip-back", theme::IVORY_100, "Previous")
                     .on_click(cx.listener(|s, _, _, cx| s.prev(cx))),
             )
             .child(
@@ -175,6 +200,7 @@ impl AppState {
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(theme::GOLD_400)))
                     .active(|s| s.bg(rgb(theme::GOLD_700)))
+                    .tooltip(tip(if playing { "Pause" } else { "Play" }))
                     .on_click(cx.listener(|s, _, _, cx| s.toggle_play(cx)))
                     .child(icon(
                         if playing { "pause" } else { "play" },
@@ -183,7 +209,7 @@ impl AppState {
                     )),
             )
             .child(
-                button("ctl-next", "skip-forward", theme::IVORY_100)
+                button("ctl-next", "skip-forward", theme::IVORY_100, "Next")
                     .on_click(cx.listener(|s, _, _, cx| s.next(cx))),
             )
             .child(
@@ -198,6 +224,11 @@ impl AppState {
                         theme::IVORY_500
                     } else {
                         theme::IVORY_50
+                    },
+                    match repeat {
+                        Repeat::Off => "Repeat: off",
+                        Repeat::All => "Repeat: all",
+                        Repeat::One => "Repeat: one",
                     },
                 )
                 .on_click(cx.listener(|s, _, _, cx| s.cycle_repeat(cx))),
@@ -297,6 +328,7 @@ impl AppState {
                     .rounded_full()
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(theme::OBSIDIAN_800)))
+                    .tooltip(tip(if volume > 0. { "Mute" } else { "Unmute" }))
                     .on_click(cx.listener(|s, _, _, cx| s.toggle_mute(cx)))
                     .child(icon(
                         if volume > 0. { "volume-2" } else { "volume-x" },

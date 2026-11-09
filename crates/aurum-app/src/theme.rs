@@ -33,3 +33,26 @@ pub fn color(hex: u32) -> gpui_kit::Hsla {
 pub fn hairline() -> gpui_kit::Hsla {
     color(IVORY_50).opacity(0.06)
 }
+
+/// Maps the tokens onto the gpui-component theme, whose widgets (search input, tooltip,
+/// skeleton) read their colours from it. Call once after `gpui_kit::init`.
+pub fn apply(cx: &mut gpui_kit::App) {
+    use gpui_kit::component::{Theme, ThemeMode};
+
+    Theme::change(ThemeMode::Dark, None, cx);
+    Theme::update(cx, |t| {
+        t.background = color(OBSIDIAN_950);
+        t.foreground = color(IVORY_100);
+        t.muted_foreground = color(IVORY_500);
+        t.border = color(OBSIDIAN_700);
+        t.input = color(OBSIDIAN_700);
+        t.ring = color(GOLD_500);
+        t.caret = color(IVORY_100);
+        t.selection = color(GOLD_500).opacity(0.3);
+        t.popover = color(OBSIDIAN_800);
+        t.popover_foreground = color(IVORY_100);
+        t.skeleton = color(OBSIDIAN_700);
+        t.font_family = FONT_UI.into();
+        t.radius = gpui_kit::px(10.);
+    });
+}
