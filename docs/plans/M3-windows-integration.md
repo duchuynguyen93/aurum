@@ -122,12 +122,18 @@ Start Menu, file `%APPDATA%\aurum\aurum.log` có nội dung, thumbnail bìa tron
 
 ## Kết quả (2026-11-11)
 
-- Đợt A và B xong trên Mac: 63 test xanh toàn workspace, 1 bỏ qua (AAC priming, từ M1). `cargo fmt`, `clippy` sạch.
+- Đợt A và B xong trên Mac: 61 test xanh toàn workspace, 1 bỏ qua (AAC priming, từ M1). `cargo fmt`, `clippy` sạch.
+  CI xanh cả macOS lẫn Windows ở commit 1b76042; job Windows lâu gấp đôi (~16 phút cho bước test) vì `cargo test -p aurum-app`
+  build thêm gpui ở profile dev.
 - Now Playing macOS hiện tên bài, nghệ sĩ, bìa, tiến trình (ảnh chụp widget Control Center); nút Pause/Play/Next trong
   widget điều khiển được app (log `media control: Pause/Play/Next`). Phím F8/F9 bàn phím thật chưa bấm thử.
 - Theo dõi thư mục: copy FLAC vào `~/Music/_watchtest` → `scan started ... added 1` sau 3–8s; xoá thư mục → `removed 1`.
-  Phát hiện và xử lý: FSEvents gộp việc xoá cả thư mục thành một `Modify(Metadata)` trên thư mục, nên
-  `Modify(Metadata)` với path đã biến mất hoặc là thư mục cũng tính là thay đổi.
+  Luật lọc cuối cùng (sau hai lần CI đỏ): không nhìn loại sự kiện, chỉ nhìn đường dẫn — file đuôi audio, thư mục, hoặc
+  đường dẫn đã biến mất thì quét lại tăng dần. Lý do: Windows báo mọi file là `Create(Any)` (b.txt cũng kích hoạt), còn
+  FSEvents gộp việc xoá cả thư mục thành một `Modify(Metadata)` trên thư mục. Runner macOS không giao sự kiện xoá thư mục
+  trong 10s nên ca đó chuyển thành unit test thuần của `is_relevant`; xoá thư mục thật đã kiểm bằng tay trên Mac.
+  Hệ quả: quét thừa khi có file bất kỳ bị xoá hoặc thư mục con thay đổi (vd Music.app ghi file tạm trong `~/Music`);
+  mỗi lần là một lượt so mtime, thấy trong log `scan started`.
 - Thumbnail bìa JPEG ghi ở `data_dir/covers/<hash>.jpg` (35 file sau một phiên).
 - `~/Music` không có file sidecar nào nên lưới Albums trên Mac không đổi; đường sidecar có 3 test trong `tests/cover.rs`.
 - Chưa kiểm được trên Mac: toàn bộ phần Windows (SMTC, thumbnail qua `file://C:\...`, icon, console, bộ cài, log file).
