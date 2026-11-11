@@ -115,6 +115,37 @@ mod tests {
         false
     }
 
+    fn event(kind: notify::EventKind, path: &std::path::Path) -> notify::Event {
+        notify::Event::new(kind).add_path(path.to_path_buf())
+    }
+
+    /// Deterministic half of the filter: event kinds differ per platform (Windows reports every
+    /// file as `Create(Any)`, FSEvents folds a deleted folder into one metadata event), so the
+    /// decision rests on the paths alone.
+    #[test]
+    fn relevance_follows_the_path_not_the_kind() {
+        use notify::EventKind;
+        let dir = std::env::temp_dir().join(format!("aurum-relevant-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let txt = dir.join("notes.txt");
+        std::fs::write(&txt, b"x").unwrap();
+
+        assert!(is_relevant(&event(EventKind::Any, &dir.join("new.flac"))));
+        assert!(!is_relevant(&event(
+            EventKind::Create(notify::event::CreateKind::Any),
+            &txt
+        )));
+        assert!(is_relevant(&event(
+            EventKind::Modify(notify::event::ModifyKind::Any),
+            &dir
+        )));
+        assert!(is_relevant(&event(
+            EventKind::Modify(notify::event::ModifyKind::Any),
+            &dir.join("gone")
+        )));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     #[test]
     fn audio_file_is_reported_and_text_file_is_not() {
         // Canonical: FSEvents reports resolved paths (/private/var on macOS).
@@ -136,23 +167,6 @@ mod tests {
         std::fs::write(dir.join("b.txt"), b"hello").unwrap();
         std::thread::sleep(Duration::from_secs(3));
         assert_eq!(watch.poll(), WatchOutcome::Quiet);
-
-        // A whole folder with audio inside disappears: FSEvents reports little more than that
-        // the folder changed.
-        let album = dir.join("album");
-        std::fs::create_dir_all(&album).unwrap();
-        std::fs::write(album.join("c.flac"), b"fLaC").unwrap();
-        assert!(
-            wait_for(&mut watch, WatchOutcome::Changed, 10),
-            "no Changed after creating a folder"
-        );
-        std::thread::sleep(Duration::from_secs(3));
-        watch.poll();
-        std::fs::remove_dir_all(&album).unwrap();
-        assert!(
-            wait_for(&mut watch, WatchOutcome::Changed, 10),
-            "no Changed after removing a folder"
-        );
 
         watch.disable();
         std::fs::remove_dir_all(dir).ok();
