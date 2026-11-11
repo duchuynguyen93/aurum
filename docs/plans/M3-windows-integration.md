@@ -119,3 +119,15 @@ nhạc vào `~/Music/_watchtest/` → vài giây sau lưới Albums có album m�
 
 SMTC hiện khi bấm phím volume/media, không có cửa sổ console, icon taskbar + Explorer, bộ cài không hỏi UAC, shortcut
 Start Menu, file `%APPDATA%\aurum\aurum.log` có nội dung, thumbnail bìa trong SMTC.
+
+## Kết quả (2026-11-11)
+
+- Đợt A và B xong trên Mac: 63 test xanh toàn workspace, 1 bỏ qua (AAC priming, từ M1). `cargo fmt`, `clippy` sạch.
+- Now Playing macOS hiện tên bài, nghệ sĩ, bìa, tiến trình (ảnh chụp widget Control Center); nút Pause/Play/Next trong
+  widget điều khiển được app (log `media control: Pause/Play/Next`). Phím F8/F9 bàn phím thật chưa bấm thử.
+- Theo dõi thư mục: copy FLAC vào `~/Music/_watchtest` → `scan started ... added 1` sau 3–8s; xoá thư mục → `removed 1`.
+  Phát hiện và xử lý: FSEvents gộp việc xoá cả thư mục thành một `Modify(Metadata)` trên thư mục, nên
+  `Modify(Metadata)` với path đã biến mất hoặc là thư mục cũng tính là thay đổi.
+- Thumbnail bìa JPEG ghi ở `data_dir/covers/<hash>.jpg` (35 file sau một phiên).
+- `~/Music` không có file sidecar nào nên lưới Albums trên Mac không đổi; đường sidecar có 3 test trong `tests/cover.rs`.
+- Chưa kiểm được trên Mac: toàn bộ phần Windows (SMTC, thumbnail qua `file://C:\...`, icon, console, bộ cài, log file).

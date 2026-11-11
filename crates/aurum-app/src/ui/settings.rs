@@ -49,6 +49,7 @@ impl AppState {
         });
 
         let scanning = self.scan.is_some();
+        let watching = self.settings.watch;
         let status = if let Some(p) = &self.scan {
             let ratio = if p.total_hint > 0 {
                 (p.scanned as f32 / p.total_hint as f32).clamp(0., 1.)
@@ -144,6 +145,25 @@ impl AppState {
                     ),
             )
             .child(div().max_w(px(720.)).child(status))
+            .child(section_label("Library"))
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .text_color(rgb(theme::IVORY_100))
+                            .child("Watch folders for changes"),
+                    )
+                    .child(secondary_button(
+                        "settings-watch",
+                        if watching { "On" } else { "Off" },
+                        if watching { "refresh-cw" } else { "x" },
+                        cx.listener(move |s, _, _, cx| s.set_watch(!watching, cx)),
+                    )),
+            )
             .when_some(self.engine_error.clone(), |d, msg| {
                 d.child(
                     div()

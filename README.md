@@ -4,7 +4,11 @@ A local music player for desktop, written in Rust with [GPUI](https://www.gpui.r
 [gpui-kit](https://github.com/longbridge/gpui-kit)). Windows is the main target; development
 happens on macOS.
 
-**Status: M2 done.** Scans local folders into SQLite, browses albums / artists / tracks with cover art and search, plays FLAC, MP3, AAC/ALAC, Vorbis, WAV and AIFF gaplessly with ReplayGain. Verified by hand on macOS; Windows builds and passes tests in CI but has not been run by a person yet.
+**Status: M3 in progress** (Windows integration). M2 is done: it scans local folders into SQLite, browses albums / artists / tracks with cover art and search, plays FLAC, MP3, AAC/ALAC, Vorbis, WAV and AIFF gaplessly with ReplayGain. Also: media keys / Windows SMTC, folder watching, and cover art from sidecar files (`cover`, `folder`, `front`, `album` as jpg/png/webp) when a track has none embedded. Verified by hand on macOS; Windows builds and passes tests in CI but has not been run by a person yet.
+
+## Download
+
+Windows builds are on the [releases page](https://github.com/duchuynguyen93/aurum/releases): a `-setup.exe` installer and a `-portable.zip`. The binaries are not code-signed, so SmartScreen will warn on first run: choose "More info" then "Run anyway".
 
 ## Stack
 

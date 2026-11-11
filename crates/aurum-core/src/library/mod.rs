@@ -6,7 +6,7 @@ pub mod scan;
 
 pub use cover::Cover;
 pub use db::{Album, Library};
-pub use scan::{ScanEvent, ScanSummary, Scanner};
+pub use scan::{ScanEvent, ScanSummary, Scanner, has_audio_extension};
 
 /// Errors from the library database and scanner setup.
 #[derive(Debug, thiserror::Error)]

@@ -40,6 +40,8 @@ pub struct Settings {
     pub volume: f32,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    /// Rescan when files in the music folders change.
+    pub watch: bool,
 }
 
 impl Default for Settings {
@@ -49,6 +51,7 @@ impl Default for Settings {
             volume: 0.8,
             shuffle: false,
             repeat: RepeatMode::Off,
+            watch: true,
         }
     }
 }
@@ -107,6 +110,7 @@ mod tests {
             volume: 0.4,
             shuffle: true,
             repeat: RepeatMode::All,
+            watch: false,
         };
         s.save(&path).unwrap();
         s.save(&path).unwrap();

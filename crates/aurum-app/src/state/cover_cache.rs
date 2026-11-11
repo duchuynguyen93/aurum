@@ -6,7 +6,9 @@
 //! mean 100 multi-megapixel textures.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::Path;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aurum_core::Track;
@@ -30,6 +32,8 @@ pub struct CoverArt {
     pub thumb: Arc<RenderImage>,
     /// Small, already blurred; stretch it over a large area for a soft backdrop.
     pub blur: Arc<RenderImage>,
+    /// JPEG copy of the thumbnail in the cache directory, for the OS media controls.
+    pub file: Option<PathBuf>,
 }
 
 /// What the cache knows about a key.
@@ -116,10 +120,11 @@ impl CoverCache {
     }
 }
 
-/// Blocking: reads the embedded picture of `path` and scales it. Call off the UI thread.
-pub fn load_art(path: &Path) -> Option<CoverArt> {
+/// Blocking: reads the embedded picture of `path`, scales it and writes the thumbnail as a JPEG
+/// under `cache_dir`. Call off the UI thread.
+pub fn load_art(path: &Path, cache_dir: &Path, key: &CoverKey) -> Option<CoverArt> {
     let cover = cover::load(path)?;
-    let art = make_art(&cover.bytes);
+    let art = build_art(&cover.bytes, Some((cache_dir, key)));
     if art.is_none() {
         log::warn!(
             "cannot decode cover of {} ({}, {} bytes)",
@@ -131,9 +136,13 @@ pub fn load_art(path: &Path) -> Option<CoverArt> {
     art
 }
 
-/// Decodes (format is guessed from the bytes, the tag's mime type is often wrong) and builds
-/// the thumbnail and the blurred copy. JPEG and PNG only.
+/// `build_art` without the thumbnail file.
+#[cfg(test)]
 pub fn make_art(bytes: &[u8]) -> Option<CoverArt> {
+    build_art(bytes, None)
+}
+
+fn build_art(bytes: &[u8], file_target: Option<(&Path, &CoverKey)>) -> Option<CoverArt> {
     let decoded = image::load_from_memory(bytes).ok()?;
     let thumb = if decoded.width().max(decoded.height()) > THUMB_SIDE {
         decoded.resize(THUMB_SIDE, THUMB_SIDE, FilterType::Triangle)
@@ -141,12 +150,56 @@ pub fn make_art(bytes: &[u8]) -> Option<CoverArt> {
         decoded
     };
     let thumb = thumb.into_rgba8();
+    let file = file_target.and_then(|(dir, key)| write_thumb_file(&thumb, dir, key));
     let small = imageops::resize(&thumb, BLUR_SIDE, BLUR_SIDE, FilterType::Triangle);
     let blur = imageops::blur(&small, BLUR_SIGMA);
     Some(CoverArt {
         thumb: render_image(thumb),
         blur: render_image(blur),
+        file,
     })
+}
+
+/// Name of the cached thumbnail of `key`: a 16 digit hex hash.
+fn thumb_file_name(key: &CoverKey) -> String {
+    let mut hasher = DefaultHasher::new();
+    key.hash(&mut hasher);
+    format!("{:016x}.jpg", hasher.finish())
+}
+
+/// Writes `thumb` as JPEG unless the file exists. Goes through a temp file and a rename so a
+/// reader never sees half an image. Failures are logged and give `None`.
+fn write_thumb_file(thumb: &RgbaImage, cache_dir: &Path, key: &CoverKey) -> Option<PathBuf> {
+    let target = cache_dir.join(thumb_file_name(key));
+    if target.exists() {
+        return Some(target);
+    }
+    let write = || -> Result<(), Box<dyn std::error::Error>> {
+        std::fs::create_dir_all(cache_dir)?;
+        let tmp = target.with_extension(format!("jpg.{}.tmp", std::process::id()));
+        let result = (|| -> Result<(), Box<dyn std::error::Error>> {
+            let rgb = image::DynamicImage::ImageRgba8(thumb.clone()).to_rgb8();
+            let mut out = std::fs::File::create(&tmp)?;
+            rgb.write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                &mut out, 85,
+            ))?;
+            out.flush()?;
+            drop(out);
+            std::fs::rename(&tmp, &target)?;
+            Ok(())
+        })();
+        if result.is_err() {
+            std::fs::remove_file(&tmp).ok();
+        }
+        result
+    };
+    match write() {
+        Ok(()) => Some(target),
+        Err(e) => {
+            log::warn!("cannot write cover thumbnail {}: {e}", target.display());
+            None
+        }
+    }
 }
 
 /// GPUI wants BGRA.
@@ -207,5 +260,21 @@ mod tests {
             BLUR_SIDE * BLUR_SIDE * 4
         );
         assert!(make_art(b"not an image").is_none());
+    }
+
+    #[test]
+    fn thumbnail_file_is_written_once_as_jpeg() {
+        let dir = std::env::temp_dir().join(format!("aurum-covers-{}", std::process::id()));
+        let k = ("Artist".to_string(), "Album".to_string());
+        let art = build_art(&png(300, 300), Some((&dir, &k))).expect("decodes");
+        let file = art.file.expect("file written");
+        assert_eq!(file.parent(), Some(dir.as_path()));
+        assert_eq!(file.extension().and_then(|e| e.to_str()), Some("jpg"));
+        assert_eq!(file.file_stem().unwrap().len(), 16);
+        assert!(std::fs::read(&file).unwrap().starts_with(&[0xFF, 0xD8]));
+        let again = build_art(&png(300, 300), Some((&dir, &k))).unwrap();
+        assert_eq!(again.file, Some(file));
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

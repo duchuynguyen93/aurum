@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Version
+        id: version
+        run: |
+          $cargo = Get-Content Cargo.toml -Raw
+          if ($cargo -notmatch '(?m)^version = "([^"]+)"') {
+            Write-Error "version not found in Cargo.toml"
+            exit 1
+          }
+          $ver = $Matches[1]
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $tagVer = $env:GITHUB_REF_NAME -replace '^v',''
+            if ($tagVer -ne $ver) {
+              Write-Error "tag $env:GITHUB_REF_NAME does not match Cargo.toml version $ver"
+              exit 1
+            }
+          }
+          "ver=$ver" >> $env:GITHUB_OUTPUT
+      - run: cargo build -p aurum-app --release
+      - name: Installer
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          & $iscc /DAppVersion=${{ steps.version.outputs.ver }} installer\aurum.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Portable zip
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Compress-Archive -Path target\release\aurum.exe, LICENSE -DestinationPath dist\aurum-${{ steps.version.outputs.ver }}-windows-x64-portable.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aurum-release
+          path: dist/*
+          retention-days: 14
+      - uses: softprops/action-gh-release@v3
+        if: github.ref_type == 'tag'
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -16,10 +16,13 @@ use gpui_kit::{
     UniformListScrollHandle, Window,
 };
 use rand::Rng;
+use souvlaki::{MediaControlEvent, SeekDirection};
 
 use super::cover_cache::{self, CoverCache, CoverKey};
+use super::media::Media;
 use super::paths;
 use super::settings::Settings;
+use super::watch::{Watch, WatchOutcome};
 
 const TICK: Duration = Duration::from_millis(50);
 /// `prev` restarts the current track instead of going back when played past this point.
@@ -29,6 +32,8 @@ const SCRUB_SEEK_INTERVAL: Duration = Duration::from_millis(120);
 /// A drag that never reported its mouse-up is abandoned after this long without a drag.
 const SCRUB_STALE_AFTER: Duration = Duration::from_secs(2);
 const SETTINGS_SAVE_DELAY: Duration = Duration::from_millis(400);
+/// Step of a media-key seek that carries no amount of its own.
+const MEDIA_SEEK_STEP: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -175,6 +180,10 @@ pub struct AppState {
     rescan_pending: bool,
     scrub_started: Instant,
     last_scrub_seek: Instant,
+    media: Media,
+    watch: Watch,
+    /// Files changed under a root; a scan runs as soon as none is in progress.
+    watch_dirty: bool,
 }
 
 fn gain_of(track: &Track) -> Option<ReplayGain> {
@@ -262,7 +271,13 @@ impl AppState {
             rescan_pending: false,
             scrub_started: now,
             last_scrub_seek: now,
+            media: Media::new(window),
+            watch: Watch::new(),
+            watch_dirty: false,
         };
+        if this.settings.watch {
+            this.watch.rebuild(&this.settings.roots);
+        }
 
         cx.spawn(async move |this, cx| {
             loop {
@@ -350,6 +365,7 @@ impl AppState {
             }
         }
         if added {
+            self.rebuild_watch();
             self.save_settings(cx);
             self.start_scan(cx);
         }
@@ -359,12 +375,35 @@ impl AppState {
     pub fn remove_root(&mut self, index: usize, cx: &mut Context<Self>) {
         if index < self.settings.roots.len() {
             self.settings.roots.remove(index);
+            self.rebuild_watch();
             self.save_settings(cx);
             // The scanner deletes rows outside the roots, so this also drops the removed
             // folder's tracks (everything, when no root is left).
             self.run_scan(cx);
             cx.notify();
         }
+    }
+
+    /// Points the folder watcher at the current roots (no-op while watching is off).
+    fn rebuild_watch(&mut self) {
+        if self.settings.watch {
+            self.watch.rebuild(&self.settings.roots);
+        }
+    }
+
+    pub fn set_watch(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.settings.watch == on {
+            return;
+        }
+        self.settings.watch = on;
+        if on {
+            self.watch.rebuild(&self.settings.roots);
+        } else {
+            self.watch.disable();
+            self.watch_dirty = false;
+        }
+        self.save_settings(cx);
+        cx.notify();
     }
 
     /// Opens the system folder picker (multiple selection allowed).
@@ -614,8 +653,28 @@ impl AppState {
         self.scrub = None;
         self.ensure_cover(&track, cx);
         self.playback.current = Some(track);
+        self.publish_track();
+        self.publish_state();
         self.queue_next_after();
         cx.notify();
+    }
+
+    /// Tells the OS media controls which track is current, with its cover file once known.
+    fn publish_track(&mut self) {
+        let file = self
+            .playback
+            .current
+            .as_ref()
+            .and_then(|t| self.covers.get(&cover_cache::key_of(t)))
+            .and_then(|art| art.file);
+        self.media
+            .set_track(self.playback.current.as_ref(), file.as_deref());
+    }
+
+    /// Tells the OS media controls the play state and position right now.
+    fn publish_state(&mut self) {
+        self.media
+            .set_playback(self.playback.playing, self.playback.position, true);
     }
 
     /// Preloads whatever plays after the current track. Called after every change of the
@@ -627,21 +686,34 @@ impl AppState {
         }
     }
 
-    pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
-        if self.playback.current.is_none() {
+    /// Starts or resumes playback; does nothing while already playing.
+    pub fn play(&mut self, cx: &mut Context<Self>) {
+        if self.playback.current.is_none() || self.playback.ended {
             self.start_current(cx);
-            return;
-        }
-        if self.playback.ended {
-            self.start_current(cx);
-        } else if self.playback.playing {
-            self.engine.pause();
-            self.playback.playing = false;
-        } else {
+        } else if !self.playback.playing {
             self.engine.play();
             self.playback.playing = true;
+            self.publish_state();
+            cx.notify();
         }
-        cx.notify();
+    }
+
+    /// Pauses playback; does nothing unless playing.
+    pub fn pause(&mut self, cx: &mut Context<Self>) {
+        if self.playback.playing {
+            self.engine.pause();
+            self.playback.playing = false;
+            self.publish_state();
+            cx.notify();
+        }
+    }
+
+    pub fn toggle_play(&mut self, cx: &mut Context<Self>) {
+        if self.playback.playing {
+            self.pause(cx);
+        } else {
+            self.play(cx);
+        }
     }
 
     pub fn next(&mut self, cx: &mut Context<Self>) {
@@ -664,6 +736,7 @@ impl AppState {
         }
         self.engine.seek(position);
         self.playback.position = position;
+        self.publish_state();
         cx.notify();
     }
 
@@ -744,13 +817,24 @@ impl AppState {
         if !self.covers.begin_load(&key) {
             return;
         }
+        let cache_dir = paths::data_dir().join("covers");
         cx.spawn(async move |this, cx| {
+            let load_key = key.clone();
             let art = cx
                 .background_executor()
-                .spawn(async move { cover_cache::load_art(&path) })
+                .spawn(async move { cover_cache::load_art(&path, &cache_dir, &load_key) })
                 .await;
             this.update(cx, |s, cx| {
-                s.covers.finish_load(key, art);
+                s.covers.finish_load(key.clone(), art);
+                let is_current = s
+                    .playback
+                    .current
+                    .as_ref()
+                    .is_some_and(|t| cover_cache::key_of(t) == key);
+                if is_current {
+                    s.publish_track();
+                    s.publish_state();
+                }
                 cx.notify();
             })
             .ok();
@@ -767,6 +851,29 @@ impl AppState {
         while let Ok(event) = self.engine_rx.try_recv() {
             changed = true;
             self.on_engine_event(event, cx);
+        }
+
+        for event in self.media.poll() {
+            changed = true;
+            self.on_media_event(event, cx);
+        }
+
+        match self.watch.poll() {
+            WatchOutcome::Quiet => {}
+            WatchOutcome::Changed => {
+                log::debug!("music folders changed");
+                self.watch_dirty = true;
+            }
+            WatchOutcome::Broken => {
+                log::warn!("folder watcher lost events, rebuilding");
+                self.rebuild_watch();
+                self.watch_dirty = true;
+            }
+        }
+        if self.watch_dirty && self.scan.is_none() && !self.settings.roots.is_empty() {
+            self.watch_dirty = false;
+            changed = true;
+            self.run_scan(cx);
         }
 
         let mut scan_events = Vec::new();
@@ -798,11 +905,39 @@ impl AppState {
         }
     }
 
+    fn on_media_event(&mut self, event: MediaControlEvent, cx: &mut Context<Self>) {
+        log::info!("media control: {event:?}");
+        match event {
+            MediaControlEvent::Play => self.play(cx),
+            MediaControlEvent::Pause => self.pause(cx),
+            MediaControlEvent::Toggle => self.toggle_play(cx),
+            MediaControlEvent::Next => self.next(cx),
+            MediaControlEvent::Previous => self.prev(cx),
+            MediaControlEvent::Stop => {
+                self.pause(cx);
+                self.seek_to(Duration::ZERO, cx);
+            }
+            MediaControlEvent::SetPosition(p) => self.seek_to(p.0, cx),
+            MediaControlEvent::Seek(dir) => self.seek_by(dir, MEDIA_SEEK_STEP, cx),
+            MediaControlEvent::SeekBy(dir, amount) => self.seek_by(dir, amount, cx),
+            _ => {}
+        }
+    }
+
+    fn seek_by(&mut self, dir: SeekDirection, amount: Duration, cx: &mut Context<Self>) {
+        let target = match dir {
+            SeekDirection::Forward => (self.playback.position + amount).min(self.playback.duration),
+            SeekDirection::Backward => self.playback.position.saturating_sub(amount),
+        };
+        self.seek_to(target, cx);
+    }
+
     fn on_engine_event(&mut self, event: Event, cx: &mut Context<Self>) {
         match event {
             Event::Position(p) => {
                 if self.scrub.is_none() {
                     self.playback.position = p;
+                    self.media.set_playback(self.playback.playing, p, false);
                 }
             }
             Event::Loaded { path, duration, .. } => {
@@ -816,6 +951,7 @@ impl AppState {
                     self.playback.playing = false;
                     self.playback.ended = true;
                     self.playback.position = Duration::ZERO;
+                    self.publish_state();
                 }
             }
             Event::TrackStarted { path } => {
@@ -833,6 +969,8 @@ impl AppState {
                     self.playback.ended = false;
                     self.ensure_cover(&track, cx);
                     self.playback.current = Some(track);
+                    self.publish_track();
+                    self.publish_state();
                 }
                 self.queue_next_after();
             }

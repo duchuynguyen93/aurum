@@ -205,7 +205,8 @@ fn to_nanos(t: SystemTime) -> i64 {
     }
 }
 
-fn has_audio_extension(path: &Path) -> bool {
+/// True when the extension is one the scanner reads (case-insensitive).
+pub fn has_audio_extension(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(e)))

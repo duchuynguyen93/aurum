@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 mod assets;
 mod state;
 mod theme;
@@ -46,8 +51,35 @@ fn bind_keys(cx: &mut App) {
     ]);
 }
 
+/// Opens `aurum.log` in the data dir for appending; truncates it first when it exceeds 2 MB.
+fn open_log_file() -> Option<std::fs::File> {
+    let dir = state::paths::data_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("aurum.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 2 * 1024 * 1024) {
+        let _ = std::fs::remove_file(&path);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
+fn init_logging() {
+    let mut builder =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"));
+    // A release build on Windows has no console, so stderr goes nowhere.
+    if cfg!(target_os = "windows")
+        && let Some(file) = open_log_file()
+    {
+        builder.target(env_logger::Target::Pipe(Box::new(file)));
+    }
+    builder.init();
+}
+
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    init_logging();
 
     gpui_kit::application()
         .with_assets(assets::Assets)
