@@ -8,7 +8,7 @@ tài liệu hướng người dùng (README, GUIDE) viết tiếng Anh.
 | [M0: Scaffold](M0-scaffold.md) | Xong | Workspace 3 crate, cửa sổ GPUI hiện chữ trên macOS, CI build Windows, repo public |
 | [M1: Core + Audio](M1-core-audio.md) | Xong | Quét thư viện (jwalk + lofty + rusqlite), engine cpal + symphonia có gapless + ReplayGain, CLI smoke |
 | [M2: Library UI](M2-library-ui.md) | Xong | Sidebar, danh sách ảo, album grid có ảnh bìa, thanh Now Playing, seek/volume, tìm kiếm |
-| M3: Windows integration | Chưa | Phím media + SMTC qua souvlaki, theo dõi thư mục (notify), settings, bản release + bộ cài |
+| [M3: Windows integration](M3-windows-integration.md) | Đang làm | Phím media + SMTC qua souvlaki, theo dõi thư mục (notify), bìa sidecar, icon, bộ cài Inno + release theo tag |
 | M4: Extras | Chưa | Playlist, lời LRC, mini player, Last.fm, Opus |
 
 ## Quan hệ với Cadence

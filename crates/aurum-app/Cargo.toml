@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+build = "build.rs"
+
 [[bin]]
 name = "aurum"
 path = "src/main.rs"
@@ -19,4 +21,12 @@ crossbeam-channel = "0.5.17"
 dirs = "6"
 serde = { version = "1.0.229", features = ["derive"] }
 rand = "0.9"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+souvlaki = "0.9"
+raw-window-handle = "0.6"
+notify = "8.2"
+notify-debouncer-full = { version = "0.7", features = ["crossbeam-channel"] }
+url = "2"
+
+[build-dependencies]
+winresource = "0.1"
