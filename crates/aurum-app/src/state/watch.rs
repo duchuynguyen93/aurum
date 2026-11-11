@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use aurum_core::library::has_audio_extension;
 use crossbeam_channel::{Receiver, Sender};
-use notify::event::{CreateKind, ModifyKind, RemoveKind};
-use notify::{EventKind, RecommendedWatcher, RecursiveMode};
+use notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
 /// Events are held back this long so copying an album triggers one scan, not hundreds.
@@ -89,23 +88,15 @@ impl Watch {
     }
 }
 
-/// Audio files, or folder-level changes (a moved or deleted folder carries files with it).
+/// Audio files, folders, and paths that no longer exist (a removed or renamed entry, whose kind
+/// cannot be told any more). Event kinds are not used: Windows reports every file as
+/// `Create(Any)`, and FSEvents folds a deleted folder with its files into one metadata event on
+/// the folder. A false positive only costs an incremental scan.
 fn is_relevant(event: &notify::Event) -> bool {
-    if event.paths.iter().any(|p| has_audio_extension(p)) {
-        return true;
-    }
-    match event.kind {
-        EventKind::Create(CreateKind::Folder | CreateKind::Any)
-        | EventKind::Remove(RemoveKind::Folder | RemoveKind::Any)
-        | EventKind::Modify(ModifyKind::Name(_))
-        | EventKind::Any => true,
-        // FSEvents folds a deleted folder with its files into one metadata event on the
-        // folder, so a vanished or directory path counts as a folder-level change.
-        EventKind::Modify(ModifyKind::Metadata(_)) => {
-            event.paths.iter().any(|p| !p.exists() || p.is_dir())
-        }
-        _ => false,
-    }
+    event
+        .paths
+        .iter()
+        .any(|p| has_audio_extension(p) || p.is_dir() || !p.exists())
 }
 
 #[cfg(test)]
